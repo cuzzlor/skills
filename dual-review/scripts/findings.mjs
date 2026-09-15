@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const SEVERITIES = ["blocker", "major", "minor", "nit"];
 export const SOURCES = ["confirmed", "disputed", "claude-only", "gpt-only", "already-raised"];
@@ -191,4 +192,13 @@ function main() {
   console.log(`wrote ${meta.paths.findings}`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) main();
+function isEntryPoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) main();
