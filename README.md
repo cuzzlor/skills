@@ -21,9 +21,11 @@ Details, options, and troubleshooting: [dual-review/SKILL.md](dual-review/SKILL.
 
 ## pr-tidy
 
-`/pr-tidy [--base <ref>] [--committed] [--whole-files] [--report-only] [-- <pathspec>...]`
+`/pr-tidy [--base <ref>] [--committed] [--whole-files] [--all] [--report-only] [-- <pathspec>...]`
 
-Pre-PR tidy-up of the prose in a branch's changes: Markdown docs, code and doc comments, public API schema descriptions (GraphQL SDL, code-first builders, OpenAPI) and user-facing UI text. A script inventories the prose the branch added or changed and lints it for known tells; Claude then checks each passage against the code, rewrites it in plain technical English, removes mannered prose, and strips implementation details from public descriptions. Edits land in the working tree, uncommitted. A post-edit check flags any hunk where code outside strings and comments changed.
+Tidy-up of the prose in a branch's changes, or in any set of files chosen by git pathspec: Markdown docs, code and doc comments, public API schema descriptions (GraphQL SDL, code-first builders, OpenAPI) and user-facing UI text. A script inventories the prose in scope and lints it for known tells; Claude then checks each passage against the code, rewrites it in plain technical English, removes mannered prose, and strips implementation details from public descriptions. Edits land in the working tree, uncommitted. A post-edit check flags any hunk where code outside strings and comments changed.
+
+By default the scope is the branch's diff. `--all -- '*schema.graphql' ':!api/src/schema'` ignores the diff and takes every matching file whole; natural requests such as "tidy all the schema files except the ones in api/src/schema" map to that form.
 
 Requires Node ≥ 22 and `git`; `gh` is used only to find the default branch when `origin/HEAD` is unset. The writing rules live in [pr-tidy/references/](pr-tidy/references/): `style.md` (all prose), `comments.md`, `docs.md`, `schema.md`, `ui-text.md`.
 

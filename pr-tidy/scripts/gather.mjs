@@ -2,6 +2,7 @@
 // pr-tidy: inventory the prose in a branch's changes and lint it for mannered-prose tells.
 //
 //   gather.mjs [--base <ref>] [--committed] [--whole-files] [--out <dir>] [-- <pathspec>...]
+//   gather.mjs --all [--out <dir>] -- <pathspec>...
 //   gather.mjs --check [--out <dir>]
 //
 // Writes <out>/inventory.json, <out>/candidates.md and <out>/digest.md, and prints digest.md.
@@ -22,16 +23,22 @@ const HELP = `pr-tidy gather — inventory the prose in this branch's changes.
 
 Usage:
   gather.mjs [options] [-- <pathspec>...]
+  gather.mjs --all [options] -- <pathspec>...
   gather.mjs --check [--out <dir>]
 
 Options:
   --base <ref>      compare against this ref (default: origin/HEAD, else the gh default branch, else main)
   --committed       review committed changes only (default: also staged, unstaged and untracked files)
   --whole-files     treat every line of each changed file as in scope, not only added lines
+  --all             ignore the branch diff: every tracked or untracked file matching the pathspec is in scope, whole
+                    (a pathspec is required; use '-- .' for the whole repository)
   --report-only     recorded in the inventory; tells the skill to report findings instead of editing
   --out <dir>       output directory (default: a per-repo directory under the OS temp dir)
   --check           re-inventory, re-lint, and diff the working tree against the snapshot from the first run
   --json            print inventory.json instead of digest.md
+
+Pathspec: git syntax. '*' also matches '/', so '*schema.graphql' matches at any depth; ':!dir' or ':(exclude)dir'
+excludes; quote globs so the shell does not expand them. Example: --all -- '*schema.graphql' ':!api/src/schema'
 `;
 
 function fail(message) {
@@ -50,7 +57,7 @@ function run(cmd, args, { cwd, allowFail = false, input } = {}) {
 }
 
 function parseArgs(argv) {
-  const opts = { base: null, committed: false, wholeFiles: false, reportOnly: false, out: null, check: false, json: false, pathspec: [] };
+  const opts = { base: null, committed: false, wholeFiles: false, all: false, reportOnly: false, out: null, check: false, json: false, pathspec: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--") {
@@ -71,6 +78,9 @@ function parseArgs(argv) {
       case "--whole-files":
         opts.wholeFiles = true;
         break;
+      case "--all":
+        opts.all = true;
+        break;
       case "--report-only":
         opts.reportOnly = true;
         break;
@@ -87,6 +97,7 @@ function parseArgs(argv) {
         fail(`unknown argument ${arg}\n\n${HELP}`);
     }
   }
+  if (opts.all && !opts.check && !opts.pathspec.length) fail("--all needs a pathspec after --; use '-- .' for the whole repository");
   return opts;
 }
 
@@ -113,6 +124,13 @@ function resolveBase(cwd, requested) {
     if (run("git", ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], { cwd, allowFail: true })) return candidate;
   }
   fail(requested ? `could not resolve --base ${requested}` : "could not determine a base branch; pass --base <ref>");
+}
+
+function treeFiles(cwd, pathspec) {
+  const out = run("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...pathspec], { cwd }) ?? "";
+  const files = new Map();
+  for (const file of out.split("\0")) if (file) files.set(file, { status: "tree" });
+  return files;
 }
 
 function changedFiles(cwd, mergeBase, committed, pathspec) {
@@ -398,16 +416,18 @@ function buildInventory(cwd, opts, previous) {
   const mergeBase = run("git", ["merge-base", baseRef, "HEAD"], { cwd, allowFail: true })?.trim() ?? head;
   const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd }).trim();
   const committed = opts.committed || previous?.committed || false;
-  const wholeFiles = opts.wholeFiles || previous?.wholeFiles || false;
+  const all = opts.all || previous?.all || false;
+  const wholeFiles = all || opts.wholeFiles || previous?.wholeFiles || false;
   const pathspec = opts.pathspec.length ? opts.pathspec : previous?.pathspec ?? [];
 
   const files = [];
   let skipped = 0;
-  for (const [file, meta] of changedFiles(cwd, mergeBase, committed, pathspec)) {
+  const selected = all ? treeFiles(cwd, pathspec) : changedFiles(cwd, mergeBase, committed, pathspec);
+  for (const [file, meta] of selected) {
     if (meta.status === "D") continue;
     if (SKIP_PATTERN.test(file)) { skipped++; continue; }
     const classification = classifyFile(file);
-    const content = readWorkingFile(cwd, file, committed);
+    const content = readWorkingFile(cwd, file, committed && !all);
     if (content === null) { skipped++; continue; }
     const added = meta.untracked || wholeFiles ? null : addedLines(cwd, mergeBase, committed, file);
     const inScope = added ? (n) => added.has(n) : () => true;
@@ -438,11 +458,12 @@ function buildInventory(cwd, opts, previous) {
     base: baseRef,
     mergeBase,
     committed,
+    all,
     wholeFiles,
     reportOnly: opts.reportOnly,
     pathspec,
     generatedAt: new Date().toISOString(),
-    commits: branchCommits(cwd, mergeBase),
+    commits: all ? [] : branchCommits(cwd, mergeBase),
     files,
     skipped,
   };
@@ -485,7 +506,10 @@ function renderDigest(inv, dir) {
   lines.push(`- Repo: \`${inv.repo}\``);
   lines.push(`- Branch: \`${inv.branch}\` at \`${inv.head.slice(0, 10)}\`; base \`${inv.base}\` (merge-base \`${inv.mergeBase.slice(0, 10)}\`)`);
   lines.push(`- Mode: ${inv.reportOnly ? "report only (no edits)" : "edit"}`);
-  lines.push(`- Scope: ${inv.committed ? "committed changes only" : "committed + staged + unstaged + untracked"}${inv.wholeFiles ? "; whole files" : "; added/changed lines only"}${inv.pathspec.length ? `; pathspec ${inv.pathspec.join(" ")}` : ""}`);
+  lines.push(inv.all
+    ? `- Scope: whole tree, every line of each file matching pathspec ${inv.pathspec.join(" ")}`
+    : `- Scope: ${inv.committed ? "committed changes only" : "committed + staged + unstaged + untracked"}${inv.wholeFiles ? "; whole files" : "; added/changed lines only"}${inv.pathspec.length ? `; pathspec ${inv.pathspec.join(" ")}` : ""}`);
+  if (inv.all) lines.push(`- Branch: \`${inv.branch}\` (the diff is ignored in --all mode)`);
   lines.push(`- Files: ${inv.files.length} reviewed, ${inv.files.filter((f) => f.candidates.length).length} with prose, ${inv.skipped} skipped (generated, binary, lockfiles)`);
   lines.push(`- Prose lines: ${totalCandidates} (${summariseKinds(kindTotals)}); lint hits: ${totalHits}`);
   lines.push(`- Categories present: ${[...categories].sort().join(", ") || "none"}`);

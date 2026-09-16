@@ -1,7 +1,7 @@
 ---
 name: pr-tidy
-description: Pre-PR tidy-up of the prose in a branch's changes. Inventories the Markdown docs, code comments, doc comments, public API schema descriptions (GraphQL SDL, code-first builders, OpenAPI) and user-facing UI text that the branch added or changed, checks each against the code for accuracy, then rewrites it in plain technical English (ASD-STE100 style), removes mannered prose, and strips implementation details from public descriptions. Use before opening a PR, or when asked to "tidy the docs and comments", "remove mannered prose", "review the wording in this branch", "check the schema descriptions", or "/pr-tidy".
-argument-hint: [--base <ref>] [--committed] [--whole-files] [--report-only] [-- <pathspec>...]
+description: Tidy the prose in a branch's changes, or in any set of files chosen by path or glob. Inventories the Markdown docs, code comments, doc comments, public API schema descriptions (GraphQL SDL, code-first builders, OpenAPI) and user-facing UI text in scope, checks each against the code for accuracy, then rewrites it in plain technical English (ASD-STE100 style), removes mannered prose, and strips implementation details from public descriptions. Use before opening a PR, or when asked to "tidy the docs and comments", "remove mannered prose", "review the wording in this branch", "check the schema descriptions", "tidy all the schema.graphql files except X", or "/pr-tidy".
+argument-hint: [--base <ref>] [--committed] [--whole-files] [--all] [--report-only] [-- <pathspec>...]
 allowed-tools: Bash(node:*), Bash(git diff:*), Bash(git log:*), Bash(git status:*), Read, Edit, Write, Grep, Glob, Agent
 ---
 
@@ -26,11 +26,23 @@ node ~/.claude/skills/pr-tidy/scripts/gather.mjs $ARGUMENTS
 
 It prints a digest: scope, the branch's commits, a table of changed files with prose, and lint hit counts. It also writes `candidates.md` (every prose line with its number, kind and lint hits) and `inventory.json` to the directory it names. Keep the directory path.
 
-Defaults: base is `origin/HEAD`, scope is committed plus staged, unstaged and untracked changes, and only added or changed lines are in scope. `--committed` limits scope to commits. `--whole-files` puts every line of each changed file in scope. `--report-only` means report findings and change nothing. Anything after `--` is a git pathspec.
+Defaults: base is `origin/HEAD`, scope is committed plus staged, unstaged and untracked changes, and only added or changed lines are in scope. `--committed` limits scope to commits. `--whole-files` puts every line of each changed file in scope. `--report-only` means report findings and change nothing. Anything after `--` is a git pathspec that narrows the diff.
+
+`--all` ignores the diff. Every tracked or untracked file that matches the pathspec is in scope, whole. Use it when the user names files rather than a branch. Translate their words into a git pathspec:
+
+| User says | Arguments |
+| --- | --- |
+| all `schema.graphql` files except those in `api/src/schema` | `--all -- '*schema.graphql' ':!api/src/schema'` |
+| the docs folder | `--all -- docs` |
+| every Markdown file in the repo | `--all -- '*.md'` |
+| the UI's error messages | `--all -- 'ui/src/*.tsx' 'ui/src/locales'` |
+| this branch's changes under `api/` only | `-- api` |
+
+Git pathspec rules: `*` also matches `/`, so `'*schema.graphql'` matches at any depth; `:!path` or `:(exclude)path` excludes; a bare directory means everything under it. Quote every glob. `--all` refuses to run without a pathspec; `-- .` means the whole repository, so confirm that is what the user wants before passing it.
 
 If the script fails, relay its error and stop. If the digest reports zero prose lines, say so and stop.
 
-Read the commit subjects in the digest. They tell you the intent of the change, which you need to judge whether a comment or doc is still true.
+In branch mode, read the commit subjects in the digest. They tell you the intent of the change, which you need to judge whether a comment or doc is still true. In `--all` mode there is no change to judge against; every passage is checked against the current code.
 
 ## 2. Read the references
 
@@ -51,7 +63,7 @@ Work through `candidates.md` file by file, in the order given. Read the file its
 
 For each passage, read the code it describes and answer: is this still true after the change? Check names, defaults, units, failure modes, ordering, nullability and every claim about behaviour. Verify against the code, not against other prose. When a passage is wrong, fix it so it matches the code, or delete it. Record every accuracy fix; the report lists them separately because they change meaning.
 
-When a passage is right and the code is unclear, prefer the structural fix if it is small and local: a better name, a constant, a type. Otherwise keep the comment. Do not widen the change beyond the branch's files.
+When a passage is right and the code is unclear, prefer the structural fix if it is small and local: a better name, a constant, a type. Otherwise keep the comment. Do not widen the change beyond the files in scope.
 
 ## 4. Rewrite pass
 
@@ -65,7 +77,7 @@ Edit prose only. Do not change identifiers, logic, string keys, schema names, ty
 
 The lint hits in `candidates.md` are hints. A hit means look; it does not mean change. A clean line can still be mannered, and this is the common case: figurative comments contain no listed word. Read every passage in scope, with or without hits.
 
-A neighbouring passage outside the diff may be plainly mannered or wrong. Fix it when it is small and in the same comment block or section. Otherwise note it as a follow-up in the report.
+In branch mode, a neighbouring passage outside the diff may be plainly mannered or wrong. Fix it when it is small and in the same comment block or section. Otherwise note it as a follow-up in the report.
 
 ## 5. Public API pass
 
@@ -100,18 +112,19 @@ Keep the report short. It has these parts, in this order:
 1. One sentence: how many files edited, how many passages deleted, shortened or rewritten.
 2. **Accuracy fixes.** Each one, as `path:line` and one sentence on what was wrong. This is the section the user reads first.
 3. **Public API changes.** Each removed implementation detail, as `path:line`. Note any description you could not make consumer-safe without a decision from the user.
-4. **Not changed.** Lint hits you judged false positives (one clause each), passages outside the diff you left for a follow-up, and anything you could not verify against the code.
+4. **Not changed.** Lint hits you judged false positives (one clause each), passages outside scope you left for a follow-up, and anything you could not verify against the code.
 5. The check summary: prose lines and lint hits before and after, and the result of any project checks you ran.
 
 In `--report-only` mode, the report replaces the edits: list each proposed change as `path:line`, the current text, and the proposed text.
 
-## Large branches
+## Large scopes
 
-When the digest lists more than about fifteen files with prose, split the files across `general-purpose` subagents. Give each a disjoint list of files. Tell each to read `references/style.md` plus the relevant references, follow steps 3 to 6 for its files only, and reply with its accuracy fixes and unresolved items. Launch them in one message. Then run step 7 and write the report yourself. Never let two agents edit the same file.
+When the digest lists more than about fifteen files with prose, which is common in `--all` mode, split the files across `general-purpose` subagents. Give each a disjoint list of files. Tell each to read `references/style.md` plus the relevant references, follow steps 3 to 6 for its files only, and reply with its accuracy fixes and unresolved items. Launch them in one message. Then run step 7 and write the report yourself. Never let two agents edit the same file.
 
 ## Troubleshooting
 
 - **"could not determine a base branch"**: the repository has no `origin/HEAD` and `gh` cannot see it. Pass `--base origin/main` or the right ref.
 - **A generated file appears in the digest.** The script skips common generated paths. Pass a pathspec that excludes it, for example `-- . ':!src/generated'`, and tell the user.
+- **A glob matched nothing.** The shell expanded it, or the pattern needs a leading `*` to match at depth. Quote the glob and re-run; `git ls-files -- '<glob>'` shows what a pathspec selects.
 - **Line numbers in `candidates.md` drift after edits.** They are from the last gather. Re-run `--check` to refresh `candidates.md`, or read the file.
 - **Test files.** UI-text guesses are suppressed in test files because their strings are fixtures. Comments in test files are still in scope.
