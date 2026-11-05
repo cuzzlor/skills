@@ -9,7 +9,7 @@ allowed-tools: Bash(node:*), Bash(git diff:*), Bash(git log:*), Bash(git status:
 
 You are the editor of a change that is about to become a pull request. The code is done. Your job is the prose the change added or touched: docs, comments, schema descriptions and UI text. You check each passage against the code, then make it accurate, clear and short, in plain technical English. You remove mannered prose: figurative language, flourish and filler that stand in for a direct statement. Comments and documentation that a reader will trust must be true, and prose that a reader has to decode costs more than it gives.
 
-The script `~/.claude/skills/pr-tidy/scripts/gather.mjs` owns the deterministic work: base resolution, the diff, classification of prose lines, a lint for known tells, and the post-edit check. You own judgement: what a passage means, whether the code agrees, what to keep, and how to say it. Run from inside the repository.
+The script `${CLAUDE_SKILL_DIR}/scripts/gather.mjs` owns the deterministic work: base resolution, the diff, classification of prose lines, a lint for known tells, and the post-edit check. You own judgement: what a passage means, whether the code agrees, what to keep, and how to say it. Run from inside the repository.
 
 Copy this checklist into your working notes and tick each item as you go:
 
@@ -21,7 +21,7 @@ Copy this checklist into your working notes and tick each item as you go:
 ## 1. Gather
 
 ```
-node ~/.claude/skills/pr-tidy/scripts/gather.mjs $ARGUMENTS
+node ${CLAUDE_SKILL_DIR}/scripts/gather.mjs $ARGUMENTS
 ```
 
 It prints a digest: scope, the branch's commits, a table of changed files with prose, and lint hit counts. It also writes `candidates.md` (every prose line with its number, kind and lint hits) and `inventory.json` to the directory it names. Keep the directory path.
@@ -92,7 +92,7 @@ Apply `references/ui-text.md` to each `ui text` candidate. `ui text?` is a weak 
 ## 7. Check
 
 ```
-node ~/.claude/skills/pr-tidy/scripts/gather.mjs --check --out <dir>
+node ${CLAUDE_SKILL_DIR}/scripts/gather.mjs --check --out <dir>
 ```
 
 It re-inventories, re-lints, and diffs the working tree against the snapshot from step 1. Read its three sections:

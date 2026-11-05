@@ -167,7 +167,7 @@ function main() {
     findings,
     reviewers: {
       claude: reviewerSection(meta.paths.claude, null),
-      gpt: reviewerSection(meta.paths.opencode, meta.paths.opencodeSkipped),
+      gpt: reviewerSection(meta.paths.gpt, meta.paths.gptSkipped),
     },
   };
   fs.writeFileSync(meta.paths.findings, JSON.stringify(result, null, 2));

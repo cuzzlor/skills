@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // dual-review — resolve what to review and write the request into the repo-local cache.
 //
-//   gather.mjs [target] [--base <ref>] [--working-tree] [--model <id>] [--claude-model <name>]
-//              [--post] [--pending] [--force]
+//   gather.mjs [target] [--base <ref>] [--working-tree] [--model <id>] [--backend <name>]
+//              [--claude-model <name>] [--post] [--pending] [--force]
 //   gather.mjs cleanup <cacheDir>
 
 import { execFileSync } from "node:child_process";
@@ -15,12 +15,13 @@ const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const CACHE_DIRNAME = ".dual-review";
 const DEFAULT_GPT_MODEL = "litellm/azure/gpt-6.1-sol";
 const MAX_BUFFER = 256 * 1024 * 1024;
+const BACKENDS = ["opencode", "litellm"];
 const MODEL_ARTIFACTS = [
   "claude.md",
-  "opencode.md",
-  "opencode.skipped.json",
-  "opencode.usage.json",
-  "opencode.log",
+  "gpt.md",
+  "gpt.skipped.json",
+  "gpt.usage.json",
+  "gpt.log",
   "synthesis.md",
   "findings.json",
   "report.html",
@@ -41,12 +42,14 @@ Target:
 Options:
   --base <ref>            base for branch/local diffs (default: config "base", else origin/HEAD)
   --working-tree          review uncommitted changes too (current branch only; untracked files included)
-  --model <id>            opencode model for the GPT review (default: config "model", else ${DEFAULT_GPT_MODEL})
+  --model <id>            model for the GPT review (default: config "model", else ${DEFAULT_GPT_MODEL})
+  --backend <name>        how to run the GPT review: opencode | litellm (default: config "backend",
+                          else opencode when it is on PATH, else litellm when LITELLM_BASE_URL is set)
   --claude-model <name>   subagent model for the Claude review: opus | sonnet | haiku (default: inherit)
   --post                  post to the PR without asking; --pending leaves the review unsubmitted
   --force                 discard cached model outputs for this target
 
-Per-repo defaults: <repo>/${CACHE_DIRNAME}/config.json { "model", "base", "claudeModel" }
+Per-repo defaults: <repo>/${CACHE_DIRNAME}/config.json { "model", "backend", "base", "claudeModel" }
 `;
 
 function fail(message) {
@@ -111,6 +114,7 @@ function parseArgs(argv) {
     base: null,
     workingTree: false,
     model: null,
+    backend: null,
     claudeModel: null,
     post: false,
     pending: false,
@@ -141,6 +145,9 @@ function parseArgs(argv) {
         break;
       case "--model":
         options.model = value();
+        break;
+      case "--backend":
+        options.backend = value();
         break;
       case "--claude-model":
         options.claudeModel = value();
@@ -258,7 +265,19 @@ function reviewThreads(repo, prNumber, cwd) {
     cwd,
   );
   if (!response || response.errors?.length) {
-    warn("review threads unavailable; prior comments will not be marked resolved.");
+    // A Claude Code cloud session blocks GraphQL and serves review threads on this REST route.
+    const ccr = ghJson(["api", `repos/${repo}/pulls/${prNumber}/ccr/review_threads`], cwd);
+    if (!Array.isArray(ccr)) {
+      warn("review threads unavailable; prior comments will not be marked resolved.");
+      return threads;
+    }
+    for (const thread of ccr) {
+      const ids = thread.comment_ids ?? [];
+      if (ids.length === 0) continue;
+      const id = `ccr-${ids[0]}`;
+      if (thread.resolved) threads.resolved.add(id);
+      for (const commentId of ids) threads.threadIds.set(commentId, id);
+    }
     return threads;
   }
   for (const thread of response.data?.repository?.pullRequest?.reviewThreads?.nodes ?? []) {
@@ -372,9 +391,12 @@ function repoInfo() {
   const commonDir = path.resolve(repoRoot, git(["rev-parse", "--git-common-dir"], repoRoot));
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], repoRoot);
   const head = git(["rev-parse", "HEAD"], repoRoot);
-  const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], repoRoot, {
-    allowFail: true,
-  });
+  const remote = git(["remote", "get-url", "origin"], repoRoot, { allowFail: true }) ?? "";
+  const match =
+    remote.match(/github\.com[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/) ?? remote.match(/\/git\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/);
+  const repo = match
+    ? `${match[1]}/${match[2]}`
+    : gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], repoRoot, { allowFail: true });
   return { repoRoot, commonDir, branch, head, repo: repo || null };
 }
 
@@ -387,11 +409,9 @@ function defaultBase(info) {
     allowFail: true,
   });
   if (symbolic) return symbolic;
-  const remoteDefault = gh(
-    ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
-    info.repoRoot,
-    { allowFail: true },
-  );
+  const remoteDefault = info.repo
+    ? gh(["api", `repos/${info.repo}`, "--jq", ".default_branch"], info.repoRoot, { allowFail: true })
+    : null;
   if (remoteDefault) {
     if (resolvesTo(`origin/${remoteDefault}`, info.repoRoot)) return `origin/${remoteDefault}`;
     if (resolvesTo(remoteDefault, info.repoRoot)) return remoteDefault;
@@ -404,8 +424,9 @@ function defaultBase(info) {
 
 function openPrForBranch(branchName, info) {
   if (!info.repo) return null;
+  const owner = info.repo.split("/")[0];
   const prs = ghJson(
-    ["pr", "list", "--state", "open", "--head", branchName, "--limit", "1", "--json", "number"],
+    ["api", "-X", "GET", `repos/${info.repo}/pulls`, "-f", "state=open", "-f", `head=${owner}:${branchName}`, "-f", "per_page=1"],
     info.repoRoot,
   );
   return prs?.[0]?.number ?? null;
@@ -440,44 +461,35 @@ function resolveRef(ref, info) {
 
 function gatherPr(number, info, repoOverride) {
   const cwd = info.repoRoot;
-  const repoArgs = repoOverride ? ["-R", repoOverride] : [];
-  const pr = ghJson(
-    [
-      "pr",
-      "view",
-      String(number),
-      ...repoArgs,
-      "--json",
-      "number,title,body,url,baseRefName,baseRefOid,headRefName,headRefOid,isCrossRepository",
-    ],
-    cwd,
-  );
-  if (!pr) fail(`could not load PR #${number}. Is gh authenticated and does this repository have a GitHub remote?`);
-  const repo = repoOverride ?? info.repo ?? pr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull/)?.[1];
+  // REST only: a Claude Code cloud session blocks GraphQL, which `gh pr` subcommands use.
+  const repo = repoOverride ?? info.repo;
+  if (!repo) fail("could not determine the GitHub repository from the origin remote.");
+  const pr = ghJson(["api", `repos/${repo}/pulls/${number}`], cwd);
+  if (!pr?.head) fail(`could not load PR #${number} from ${repo}. Is gh authenticated?`);
   git(["fetch", "--quiet", "origin", `+refs/pull/${number}/head:refs/dual-review/pr-${number}`], cwd, {
     allowFail: true,
   });
-  git(["fetch", "--quiet", "origin", pr.baseRefName], cwd, { allowFail: true });
+  git(["fetch", "--quiet", "origin", pr.base.ref], cwd, { allowFail: true });
   let diff;
   try {
-    diff = gh(["pr", "diff", String(number), ...repoArgs], cwd);
+    diff = gh(["api", `repos/${repo}/pulls/${number}`, "-H", "Accept: application/vnd.github.diff"], cwd);
   } catch (error) {
     const detail = String(error.message);
-    if (!/too_large|maximum number of files/i.test(detail)) throw error;
-    warn("gh pr diff refused the diff as too large; using git diff instead.");
-    diff = git(["diff", `${pr.baseRefOid}...${pr.headRefOid}`], cwd);
+    if (!/too_large|too large|maximum number of (files|lines)|HTTP 406/i.test(detail)) throw error;
+    warn("GitHub refused the PR diff as too large; using git diff instead.");
+    diff = git(["diff", `${pr.base.sha}...${pr.head.sha}`], cwd);
   }
   const body = (pr.body ?? "").trim();
   return {
     mode: "pr",
     repo,
     prNumber: pr.number,
-    prUrl: pr.url,
+    prUrl: pr.html_url,
     prTitle: pr.title,
-    headRef: pr.headRefName,
-    headSha: pr.headRefOid,
-    baseRef: pr.baseRefName,
-    baseSha: pr.baseRefOid,
+    headRef: pr.head.ref,
+    headSha: pr.head.sha,
+    baseRef: pr.base.ref,
+    baseSha: pr.base.sha,
     mergeBase: null,
     description: `**${pr.title}**${
       body ? `\n\n${body.split("\n").map((line) => `> ${line}`).join("\n")}` : ""
@@ -485,7 +497,7 @@ function gatherPr(number, info, repoOverride) {
     diff,
     changedFiles: changedFilesFromDiff(diff),
     priorComments: repo ? priorComments(repo, pr.number, cwd) : [],
-    headAvailable: resolvesTo(pr.headRefOid, cwd) !== null,
+    headAvailable: resolvesTo(pr.head.sha, cwd) !== null,
   };
 }
 
@@ -608,6 +620,31 @@ function cleanup(cacheDir) {
   git(["worktree", "prune"], meta.repoRoot, { allowFail: true });
 }
 
+// ---------------------------------------------------------------- GPT backend
+
+function onPath(bin) {
+  return (process.env.PATH ?? "").split(path.delimiter).some((dir) => {
+    try {
+      fs.accessSync(path.join(dir, bin), fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+// opencode where it is installed, as on a workstation. Else LiteLLM where it is configured, as in
+// a Claude Code cloud session. Else opencode, whose runner then reports that it is missing.
+function chooseBackend(requested) {
+  if (requested) {
+    if (!BACKENDS.includes(requested)) fail(`unknown backend ${requested}; use ${BACKENDS.join(" or ")}.`);
+    return requested;
+  }
+  if (onPath("opencode")) return "opencode";
+  if (process.env.LITELLM_BASE_URL) return "litellm";
+  return "opencode";
+}
+
 // ---------------------------------------------------------------- main
 
 function main() {
@@ -623,6 +660,7 @@ function main() {
   }
   const info = repoInfo();
   const config = readJson(path.join(info.repoRoot, CACHE_DIRNAME, "config.json")) ?? {};
+  const gptBackend = chooseBackend(options.backend ?? config.backend);
   const context = resolveContext(options, config, info);
   if (context.changedFiles.length === 0) fail("the diff has no changed files.");
 
@@ -641,10 +679,10 @@ function main() {
       reviewerPrompt: "reviewer-prompt.md",
       synthesisPrompt: "synthesis-prompt.md",
       claude: "claude.md",
-      opencode: "opencode.md",
-      opencodeSkipped: "opencode.skipped.json",
-      opencodeUsage: "opencode.usage.json",
-      opencodeLog: "opencode.log",
+      gpt: "gpt.md",
+      gptSkipped: "gpt.skipped.json",
+      gptUsage: "gpt.usage.json",
+      gptLog: "gpt.log",
       synthesis: "synthesis.md",
       findings: "findings.json",
       report: "report.html",
@@ -655,10 +693,10 @@ function main() {
   );
   const cached = {
     claude: nonEmpty(paths.claude),
-    opencode: nonEmpty(paths.opencode),
+    gpt: nonEmpty(paths.gpt),
     synthesis: nonEmpty(paths.synthesis),
   };
-  if (!cached.synthesis) fs.rmSync(paths.opencodeSkipped, { force: true });
+  if (!cached.synthesis) fs.rmSync(paths.gptSkipped, { force: true });
 
   const worktreePath = cached.synthesis ? null : ensureWorktree(context, cacheDir, info);
 
@@ -670,7 +708,7 @@ function main() {
   fs.writeFileSync(paths.reviewerPrompt, `${reviewerTemplate.trimEnd()}\n\nThe review request is at: ${paths.request}\n`);
   fs.writeFileSync(
     paths.synthesisPrompt,
-    `${synthesisTemplate.trimEnd()}\n\nFiles (absolute paths):\n- Review request: ${paths.request}\n- Claude review: ${paths.claude}\n- GPT review: ${paths.opencode}\n`,
+    `${synthesisTemplate.trimEnd()}\n\nFiles (absolute paths):\n- Review request: ${paths.request}\n- Claude review: ${paths.claude}\n- GPT review: ${paths.gpt}\n`,
   );
 
   const meta = {
@@ -693,6 +731,7 @@ function main() {
     changedFiles: context.changedFiles,
     priorCommentCount: context.priorComments.length,
     gptModel: options.model ?? config.model ?? DEFAULT_GPT_MODEL,
+    gptBackend,
     claudeModel: options.claudeModel ?? config.claudeModel ?? null,
     post: options.post,
     pending: options.pending,
