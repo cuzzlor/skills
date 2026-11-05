@@ -14,7 +14,7 @@ Both come from the same habit: writing to sound a certain way rather than to inf
 
 ## Core rules
 
-Adapted from ASD-STE100 Simplified Technical English (Issue 9), the Google developer documentation style guide, and GOV.UK content guidance. The rules are the checklist; the reasons are there so that you can handle a case the rule does not name.
+The rules are the checklist. The reasons let you handle a case that no rule names.
 
 1. **One meaning per word, one word per meaning.** Use the same term for the same thing everywhere in the change. Do not vary a term to avoid repetition; repetition is how a reader knows two sentences describe the same thing.
 2. **Active voice, present tense.** "The job retries three times", not "three retries will be attempted". Passive is acceptable only when the actor is unknown or irrelevant.
