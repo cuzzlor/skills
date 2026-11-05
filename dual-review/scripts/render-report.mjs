@@ -150,10 +150,10 @@ const targetHtml = isPr
 const short = (sha) => (sha ? sha.slice(0, 7) : "—");
 let gptUsage = null;
 try {
-  gptUsage = JSON.parse(fs.readFileSync(meta.paths.opencodeUsage, "utf8"));
+  gptUsage = JSON.parse(fs.readFileSync(meta.paths.gptUsage, "utf8"));
 } catch {}
 const gptSkipped = data.reviewers.gpt.skipped;
-const reviewersHtml = `Claude${meta.claudeModel ? ` (${esc(meta.claudeModel)})` : ""} · <span class="mono">${esc(meta.gptModel)}</span> via opencode${
+const reviewersHtml = `Claude${meta.claudeModel ? ` (${esc(meta.claudeModel)})` : ""} · <span class="mono">${esc(meta.gptModel)}</span> via ${esc(meta.gptBackend ?? "opencode")}${
   gptSkipped ? " (skipped)" : ""
 }`;
 const usageHtml = gptUsage
@@ -219,7 +219,7 @@ function reviewerDetails(label, reviewer, file) {
 
 const rawReviews = [
   reviewerDetails("Claude review", data.reviewers.claude, meta.paths.claude),
-  reviewerDetails(`GPT review · ${meta.gptModel}`, data.reviewers.gpt, meta.paths.opencode),
+  reviewerDetails(`GPT review · ${meta.gptModel}`, data.reviewers.gpt, meta.paths.gpt),
 ].join("\n");
 
 const filesHtml = `<details><summary>Changed files <span class="count">${meta.changedFiles.length}</span></summary><div class="details-body"><ul class="files">${meta.changedFiles

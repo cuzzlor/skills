@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// dual-review — run the GPT review through opencode and write opencode.md.
+// dual-review — run the GPT review through opencode and write gpt.md.
 //
 //   run-opencode.mjs <cacheDir> [--model <id>] [--timeout <minutes>] [--bin <opencode>]
 //
-// Never exits non-zero for a reviewer failure: it writes opencode.skipped.json instead so the
+// Never exits non-zero for a reviewer failure: it writes gpt.skipped.json instead so the
 // pipeline continues Claude-only.
 
 import { spawn } from "node:child_process";
@@ -41,22 +41,22 @@ function note(line) {
 }
 
 function finish() {
-  fs.writeFileSync(meta.paths.opencodeLog, `${log.join("\n")}\n`);
+  fs.writeFileSync(meta.paths.gptLog, `${log.join("\n")}\n`);
 }
 
 function skip(reason) {
-  fs.rmSync(meta.paths.opencode, { force: true });
+  fs.rmSync(meta.paths.gpt, { force: true });
   fs.writeFileSync(
-    meta.paths.opencodeSkipped,
-    JSON.stringify({ reason, model, at: new Date().toISOString() }, null, 2),
+    meta.paths.gptSkipped,
+    JSON.stringify({ reason, model, backend: "opencode", at: new Date().toISOString() }, null, 2),
   );
   note(`skipped — ${reason}`);
   finish();
   process.exit(0);
 }
 
-fs.rmSync(meta.paths.opencode, { force: true });
-fs.rmSync(meta.paths.opencodeSkipped, { force: true });
+fs.rmSync(meta.paths.gpt, { force: true });
+fs.rmSync(meta.paths.gptSkipped, { force: true });
 
 // opencode configs reference provider keys as {env:NAME}. Interactive shells export those from rc
 // files that a non-interactive runner never sources. When any such variable is missing here, run
@@ -147,17 +147,17 @@ child.on("close", (code) => {
   clearTimeout(timer);
   const elapsedSeconds = Math.round((Date.now() - startedAt) / 100) / 10;
   const finalText = messageText.join("\n").trim();
-  if (spawnError?.code === "ENOENT" || code === 127) skip(`${bin} CLI not found on PATH`);
+  if (spawnError?.code === "ENOENT" || code === 127) skip(`${bin} CLI not found on PATH; set LITELLM_BASE_URL to use the LiteLLM backend instead`);
   if (timedOut) skip(`timed out after ${timeoutMinutes} minutes`);
   if (code !== 0 || !finalText) {
     const detail = eventError || stderr.trim().split("\n").slice(-5).join("\n") || (code === 0 ? "no final response" : `exit code ${code}`);
     skip(detail);
   }
-  fs.writeFileSync(meta.paths.opencode, `${finalText}\n`);
+  fs.writeFileSync(meta.paths.gpt, `${finalText}\n`);
   fs.writeFileSync(
-    meta.paths.opencodeUsage,
-    JSON.stringify({ model, input: usage.input, output: usage.output, elapsedSeconds }, null, 2),
+    meta.paths.gptUsage,
+    JSON.stringify({ model, backend: "opencode", input: usage.input, output: usage.output, elapsedSeconds }, null, 2),
   );
-  note(`done in ${elapsedSeconds}s — ${usage.input} tokens in / ${usage.output} out → ${meta.paths.opencode}`);
+  note(`done in ${elapsedSeconds}s — ${usage.input} tokens in / ${usage.output} out → ${meta.paths.gpt}`);
   finish();
 });
