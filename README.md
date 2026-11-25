@@ -20,7 +20,7 @@ Requires Node ≥ 22, `git` and an authenticated `gh`. The GitHub calls use the 
 - `opencode`: runs the opencode CLI with a non-Claude model. The skill uses it when `opencode` is on `PATH`.
 - `litellm`: calls a LiteLLM proxy through its OpenAI-compatible API and gives the model read-only tools to read and search the checkout. The skill uses it when opencode is not installed and `LITELLM_BASE_URL` is set. Set `LITELLM_API_KEY` too, unless a cloud network secret supplies the key.
 
-`--backend` or `"backend"` in the config file overrides the choice. The default GPT model is `litellm/azure/gpt-6.1-sol`; override per run with `--model` or per repo in `<repo>/.dual-review/config.json`. The `litellm` backend removes the `litellm/` prefix and sends `azure/gpt-6.1-sol`. Review artifacts are cached in `<repo>/.dual-review/`, which the skill adds to `.git/info/exclude`.
+`--backend` or `"backend"` in the config file overrides the choice. The default GPT model is `litellm/azure/gpt-6.2-sol`; override per run with `--model` or per repo in `<repo>/.dual-review/config.json`. The `litellm` backend removes the `litellm/` prefix and sends `azure/gpt-6.2-sol`. Review artifacts are cached in `<repo>/.dual-review/`, which the skill adds to `.git/info/exclude`.
 
 Details, options, and troubleshooting: [dual-review/SKILL.md](dual-review/SKILL.md).
 

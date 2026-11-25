@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CACHE_DIRNAME = ".dual-review";
-const DEFAULT_GPT_MODEL = "litellm/azure/gpt-6.1-sol";
+const DEFAULT_GPT_MODEL = "litellm/azure/gpt-6.2-sol";
 const MAX_BUFFER = 256 * 1024 * 1024;
 const BACKENDS = ["opencode", "litellm"];
 const MODEL_ARTIFACTS = [
